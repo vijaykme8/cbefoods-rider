@@ -1,10 +1,10 @@
-const CACHE_NAME = 'cbe-rider-map-v2';
+const CACHE_NAME = 'cbe-rider-map-v4';
 const APP_SHELL = [
   './',
   './index.html',
   './styles.css',
   './rider.js',
-  './ola-map-v2.js',
+  './ola-map-v4.js',
   './firebase-config.js',
   './manifest.webmanifest',
   './icons/rider-icon.svg'

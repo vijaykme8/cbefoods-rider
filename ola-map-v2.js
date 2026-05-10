@@ -6,7 +6,7 @@
    - Simple live rider/customer map renderer
 ========================================================= */
 (function () {
-  const PROXY_URL = "/.netlify/functions/ola-maps";
+  const PROXY_URL = "/ola-maps";
   const DEFAULT_STYLE = "default-light-standard";
   const ROUTE_CACHE = new Map();
   const MAPS = new Map();

@@ -130,23 +130,314 @@
   }
 
   function orderPoint(order) {
-    return normalizeLatLng(order.deliveryLocation) || normalizeLatLng(order.location) || null;
+    return normalizeLatLng(order?.deliveryLocation) || normalizeLatLng(order?.location) || null;
   }
 
   function riderPoint(order) {
-    return normalizeLatLng(order.riderLocation || { lat: order.riderLat, lng: order.riderLng }) || normalizeLatLng(riderProfile?.location || { lat: riderProfile?.lat, lng: riderProfile?.lng });
+    return normalizeLatLng(order?.riderLocation || { lat: order?.riderLat, lng: order?.riderLng }) || latestRiderLocation || normalizeLatLng(riderProfile?.location || { lat: riderProfile?.lat, lng: riderProfile?.lng });
+  }
+
+  function decodePolyline(str, precision = 5) {
+    if (!str || typeof str !== "string") return [];
+    let index = 0;
+    let lat = 0;
+    let lng = 0;
+    const coordinates = [];
+    const factor = Math.pow(10, precision);
+
+    while (index < str.length) {
+      let result = 0;
+      let shift = 0;
+      let byte;
+      do {
+        byte = str.charCodeAt(index++) - 63;
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20 && index < str.length);
+      const dlat = (result & 1) ? ~(result >> 1) : (result >> 1);
+      lat += dlat;
+
+      result = 0;
+      shift = 0;
+      do {
+        byte = str.charCodeAt(index++) - 63;
+        result |= (byte & 0x1f) << shift;
+        shift += 5;
+      } while (byte >= 0x20 && index < str.length);
+      const dlng = (result & 1) ? ~(result >> 1) : (result >> 1);
+      lng += dlng;
+
+      coordinates.push([lng / factor, lat / factor]);
+    }
+
+    return coordinates.filter(point => Number.isFinite(point[0]) && Number.isFinite(point[1]));
+  }
+
+  function collectCoordinatesFromGeoJson(obj) {
+    if (!obj || typeof obj !== "object") return [];
+    if (obj.type === "LineString" && Array.isArray(obj.coordinates)) return obj.coordinates;
+    if (obj.type === "Feature" && obj.geometry) return collectCoordinatesFromGeoJson(obj.geometry);
+    if (obj.type === "FeatureCollection" && Array.isArray(obj.features)) {
+      return obj.features.flatMap(feature => collectCoordinatesFromGeoJson(feature));
+    }
+    return [];
+  }
+
+  function haversineMeters(a, b) {
+    const R = 6371000;
+    const toRad = value => value * Math.PI / 180;
+    const dLat = toRad(b.lat - a.lat);
+    const dLng = toRad(b.lng - a.lng);
+    const lat1 = toRad(a.lat);
+    const lat2 = toRad(b.lat);
+    const h = Math.sin(dLat / 2) ** 2 + Math.cos(lat1) * Math.cos(lat2) * Math.sin(dLng / 2) ** 2;
+    return 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+  }
+
+  function formatDistance(meters) {
+    const value = Number(meters || 0);
+    if (!Number.isFinite(value) || value <= 0) return "—";
+    if (value < 1000) return `${Math.round(value)} m`;
+    return `${(value / 1000).toFixed(value < 10000 ? 1 : 0)} km`;
+  }
+
+  function formatDuration(seconds) {
+    const value = Number(seconds || 0);
+    if (!Number.isFinite(value) || value <= 0) return "—";
+    const mins = Math.max(1, Math.round(value / 60));
+    if (mins < 60) return `${mins} min`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m ? `${h} hr ${m} min` : `${h} hr`;
+  }
+
+  function routeNumber(value) {
+    if (!value) return 0;
+    if (typeof value === "number") return value;
+    if (typeof value === "object") return Number(value.value ?? value.distance ?? value.meters ?? value.duration ?? value.seconds ?? 0) || 0;
+    return Number(String(value).replace(/[^0-9.]/g, "")) || 0;
+  }
+
+  function extractRouteData(data, origin, destination) {
+    const fallbackCoords = [[origin.lng, origin.lat], [destination.lng, destination.lat]];
+    const routes = data?.routes || data?.data?.routes || data?.result?.routes || [];
+    const route = Array.isArray(routes) ? routes[0] : routes;
+    let coords = [];
+    let distanceMeters = 0;
+    let durationSeconds = 0;
+
+    const directEncoded =
+      route?.overview_polyline?.points ||
+      route?.overviewPolyline?.points ||
+      route?.overview_polyline ||
+      route?.overviewPolyline ||
+      route?.polyline ||
+      route?.encodedPolyline ||
+      route?.geometry;
+
+    if (typeof directEncoded === "string") {
+      coords = decodePolyline(directEncoded, 5);
+      if (!coords.length) coords = decodePolyline(directEncoded, 6);
+    }
+
+    if (!coords.length) coords = collectCoordinatesFromGeoJson(route?.geometry || route?.geojson || route?.routeGeoJson);
+
+    const legs = Array.isArray(route?.legs) ? route.legs : [];
+    if (!coords.length && legs.length) {
+      const stepCoords = [];
+      legs.forEach(leg => {
+        (leg.steps || []).forEach(step => {
+          const encoded = step.polyline?.points || step.polyline || step.encodedPolyline || step.geometry;
+          if (typeof encoded === "string") {
+            stepCoords.push(...decodePolyline(encoded, 5));
+          } else {
+            stepCoords.push(...collectCoordinatesFromGeoJson(encoded));
+          }
+        });
+      });
+      coords = stepCoords;
+    }
+
+    if (legs.length) {
+      distanceMeters = legs.reduce((sum, leg) => sum + routeNumber(leg.distance), 0);
+      durationSeconds = legs.reduce((sum, leg) => sum + routeNumber(leg.duration), 0);
+    }
+
+    if (!distanceMeters) distanceMeters = routeNumber(route?.distance || data?.distance);
+    if (!durationSeconds) durationSeconds = routeNumber(route?.duration || data?.duration);
+    if (!distanceMeters) distanceMeters = haversineMeters(origin, destination);
+    if (!durationSeconds) durationSeconds = Math.round(distanceMeters / 6.5);
+
+    if (!Array.isArray(coords) || coords.length < 2) coords = fallbackCoords;
+    coords = coords
+      .map(point => Array.isArray(point) ? [Number(point[0]), Number(point[1])] : [Number(point.lng ?? point.lon ?? point.longitude), Number(point.lat ?? point.latitude)])
+      .filter(point => Number.isFinite(point[0]) && Number.isFinite(point[1]));
+    if (coords.length < 2) coords = fallbackCoords;
+
+    return {
+      coordinates: coords,
+      distanceMeters,
+      durationSeconds,
+      distanceText: formatDistance(distanceMeters),
+      durationText: formatDuration(durationSeconds),
+      raw: data
+    };
+  }
+
+  async function getRoute(origin, destination) {
+    if (!origin || !destination) return null;
+    try {
+      const data = await window.CBEOlaMapV4.directions(origin, destination);
+      const route = extractRouteData(data, origin, destination);
+      route.fallback = false;
+      return route;
+    } catch (error) {
+      const route = extractRouteData(null, origin, destination);
+      route.fallback = true;
+      return route;
+    }
+  }
+
+  function routeFeature(coordinates) {
+    return {
+      type: "Feature",
+      geometry: { type: "LineString", coordinates: coordinates || [] },
+      properties: {}
+    };
+  }
+
+  async function ensureRiderMap(container, center, options = {}) {
+    const containerEl = typeof container === "string" ? document.getElementById(container) : container;
+    if (!containerEl || !window.CBEOlaMapV4) return null;
+    const key = containerEl.id || containerEl.dataset.riderMapOrder || "rider-map";
+    let store = riderMaps.get(key);
+    if (store && store.map) {
+      setTimeout(() => store.map.resize(), 80);
+      return store;
+    }
+
+    const created = await window.CBEOlaMapV4.createMap({
+      container: containerEl,
+      center: [center.lng, center.lat],
+      zoom: options.zoom || 15,
+      controls: options.controls !== false
+    });
+
+    store = {
+      map: created.map,
+      maplibregl: created.maplibregl,
+      markers: {},
+      loaded: false
+    };
+    riderMaps.set(key, store);
+
+    await new Promise(resolve => {
+      if (created.map.loaded()) return resolve();
+      created.map.once("load", resolve);
+    });
+    store.loaded = true;
+    return store;
+  }
+
+  function updateMarker(store, name, point, color) {
+    if (!store || !point) return;
+    const lngLat = [point.lng, point.lat];
+    if (store.markers[name]) {
+      store.markers[name].setLngLat(lngLat);
+      return;
+    }
+    store.markers[name] = new store.maplibregl.Marker({ color })
+      .setLngLat(lngLat)
+      .addTo(store.map);
+  }
+
+  function updateRouteLayer(store, coordinates, color = "#08A045") {
+    if (!store || !store.map || !Array.isArray(coordinates)) return;
+    const sourceId = "delivery-route";
+    const layerId = "delivery-route-line";
+    const data = routeFeature(coordinates);
+    if (store.map.getSource(sourceId)) {
+      store.map.getSource(sourceId).setData(data);
+    } else {
+      store.map.addSource(sourceId, { type: "geojson", data });
+      store.map.addLayer({
+        id: layerId,
+        type: "line",
+        source: sourceId,
+        layout: { "line-join": "round", "line-cap": "round" },
+        paint: {
+          "line-color": color,
+          "line-width": 5,
+          "line-opacity": 0.92
+        }
+      });
+    }
+  }
+
+  function fitRiderMap(store, rider, customer, options = {}) {
+    if (!store || !store.map || !store.maplibregl) return;
+    if (options.autoFollow && rider) {
+      store.map.easeTo({ center: [rider.lng, rider.lat], zoom: options.followZoom || 16, duration: 450 });
+      return;
+    }
+    if (rider && customer) {
+      const bounds = new store.maplibregl.LngLatBounds([rider.lng, rider.lat], [rider.lng, rider.lat]);
+      bounds.extend([customer.lng, customer.lat]);
+      store.map.fitBounds(bounds, { padding: options.padding || 52, maxZoom: options.maxZoom || 16, duration: 450 });
+    } else if (customer) {
+      store.map.easeTo({ center: [customer.lng, customer.lat], zoom: options.maxZoom || 16, duration: 450 });
+    }
+  }
+
+  async function renderRiderRouteMap(options) {
+    const customer = normalizeLatLng(options.customer);
+    const rider = normalizeLatLng(options.rider);
+    const center = rider || customer;
+    const messageEl = typeof options.messageEl === "string" ? document.getElementById(options.messageEl) : options.messageEl;
+    if (!center || !customer || !window.CBEOlaMapV4) {
+      if (messageEl) {
+        messageEl.textContent = "Pinned delivery location missing.";
+        messageEl.style.display = "flex";
+      }
+      return null;
+    }
+
+    const store = await ensureRiderMap(options.container, center, options);
+    if (!store) return null;
+
+    updateMarker(store, "customer", customer, options.customerColor || "#8806CE");
+    if (rider) updateMarker(store, "rider", rider, options.riderColor || "#08A045");
+
+    let route = null;
+    if (rider) {
+      route = await getRoute(rider, customer);
+      updateRouteLayer(store, route.coordinates, options.routeColor || "#08A045");
+      if (typeof options.onRoute === "function") options.onRoute(route);
+    }
+
+    fitRiderMap(store, rider, customer, options);
+    setTimeout(() => store.map.resize(), 100);
+    if (messageEl) messageEl.style.display = "none";
+    return { store, route };
+  }
+
+  function openExternalNavigation(destination, origin = null) {
+    if (!destination) return;
+    let url = `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(destination.lat + "," + destination.lng)}&travelmode=driving`;
+    if (origin) url += `&origin=${encodeURIComponent(origin.lat + "," + origin.lng)}`;
+    window.open(url, "_blank", "noopener");
   }
 
   function initRiderOrderMaps() {
     const mapCards = Array.from(document.querySelectorAll("[data-rider-map-order]"));
-    if (!mapCards.length || !window.CBEMapV2) return;
+    if (!mapCards.length || !window.CBEOlaMapV4) return;
 
     mapCards.forEach(container => {
       const order = assignedOrders.find(item => item.id === container.dataset.riderMapOrder);
       const customer = orderPoint(order);
       if (!order || !customer) return;
       const rider = riderPoint(order);
-      window.CBEMapV2.renderRouteMap({
+      renderRiderRouteMap({
         container,
         customer,
         rider,
@@ -159,7 +450,10 @@
           const meta = document.getElementById(`riderMapMeta-${order.id}`);
           if (meta && rider) meta.textContent = `${route.distanceText || "—"} · ${route.durationText || "—"}`;
         }
-      }).catch(() => toast("Ola map preview failed. Check Netlify function and OLA_MAPS_API_KEY."));
+      }).catch(error => {
+        console.log("Rider preview map V4 failed", error);
+        toast("Ola map preview failed. Check Cloudflare function and Ola key.");
+      });
     });
   }
 
@@ -174,7 +468,7 @@
       <div class="delivery-nav-sheet">
         <div class="nav-sheet-top">
           <div>
-            <div class="nav-kicker">Live navigation</div>
+            <div class="nav-kicker">Live delivery route</div>
             <div class="nav-title" id="navCustomerName">Customer</div>
             <div class="nav-subtitle" id="navAddressText">Pinned delivery location</div>
           </div>
@@ -182,7 +476,7 @@
         </div>
         <div class="nav-map-wrap">
           <div id="riderLiveNavMap" class="nav-live-map"></div>
-          <div id="riderLiveNavMsg" class="nav-map-message">Loading Ola Maps...</div>
+          <div id="riderLiveNavMsg" class="nav-map-message">Loading live delivery map...</div>
         </div>
         <div class="nav-metrics">
           <div><span>ETA</span><strong id="navEta">—</strong></div>
@@ -204,7 +498,7 @@
     $("externalNavBtn").addEventListener("click", () => {
       const order = assignedOrders.find(item => item.id === activeNavigationOrderId);
       const destination = orderPoint(order);
-      if (destination && window.CBEMapV2) window.CBEMapV2.openExternalNavigation(destination, latestRiderLocation || riderPoint(order));
+      if (destination) openExternalNavigation(destination, latestRiderLocation || riderPoint(order));
     });
     return modal;
   }
@@ -215,11 +509,11 @@
   }
 
   async function updateLiveNavigationMap(order, location) {
-    if (!order || !window.CBEMapV2) return;
+    if (!order || !window.CBEOlaMapV4) return;
     const customer = orderPoint(order);
     const rider = location || latestRiderLocation || riderPoint(order);
     if (!customer) return toast("This order has no pinned delivery location.");
-    await window.CBEMapV2.renderRouteMap({
+    await renderRiderRouteMap({
       container: "riderLiveNavMap",
       messageEl: "riderLiveNavMsg",
       customer,
@@ -278,6 +572,8 @@
         lat: position.coords.latitude,
         lng: position.coords.longitude,
         accuracy: position.coords.accuracy || "",
+        heading: position.coords.heading || "",
+        speed: position.coords.speed || "",
         updatedAtClient: new Date().toISOString()
       };
       await saveRiderLiveLocation(order.id, location);
@@ -310,7 +606,7 @@
 
     await updateLiveNavigationMap(order, location || riderPoint(order));
     startLocationWatch(order);
-    toast("Live delivery navigation started.");
+    toast("Live tracking started. Keep this screen open while delivering.");
   }
 
   async function stopLiveNavigation() {
@@ -672,6 +968,7 @@
     const location = await getCurrentPositionSafe(false);
     const patch = {
       status: "out_for_delivery",
+      riderNavigationActive: true,
       pickedUpAt: firebase.firestore.FieldValue.serverTimestamp(),
       riderUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -694,7 +991,7 @@
       patch.riderLng = location.lng;
     }
     await db.collection("orders").doc(orderId).set(patch, { merge: true });
-    await db.collection("deliveryPartners").doc(auth.currentUser.uid).set({ busy: true, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
+    await db.collection("deliveryPartners").doc(auth.currentUser.uid).set({ busy: true, navigationActive: true, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
     toast("Order marked on the way.");
     startDeliveryNavigation(orderId);
   }
