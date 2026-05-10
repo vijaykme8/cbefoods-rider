@@ -29,6 +29,10 @@
   let lastAssignedIds = new Set();
   let bootedOrdersOnce = false;
   let soundEnabled = true;
+  let riderMaps = new Map();
+  let activeNavigationOrderId = "";
+  let liveWatchId = null;
+  let latestRiderLocation = null;
 
   function initFirebase() {
     if (!window.firebase || !window.TIFFIN_FIREBASE_CONFIG) {
@@ -133,56 +137,202 @@
     return normalizeLatLng(order.riderLocation || { lat: order.riderLat, lng: order.riderLng }) || normalizeLatLng(riderProfile?.location || { lat: riderProfile?.lat, lng: riderProfile?.lng });
   }
 
-  function getOlaStyleUrl() {
-    return `${OLA_PROXY_URL}?type=style&style=default-light-standard`;
-  }
-
-  function loadMapLibre() {
-    if (window.maplibregl) return Promise.resolve(window.maplibregl);
-    if (mapLibreLoadingPromise) return mapLibreLoadingPromise;
-    mapLibreLoadingPromise = new Promise((resolve, reject) => {
-      const script = document.createElement("script");
-      script.src = "https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.js";
-      script.async = true;
-      script.defer = true;
-      script.onload = () => resolve(window.maplibregl);
-      script.onerror = () => reject(new Error("MapLibre failed to load"));
-      document.head.appendChild(script);
-    });
-    return mapLibreLoadingPromise;
-  }
-
   function initRiderOrderMaps() {
     const mapCards = Array.from(document.querySelectorAll("[data-rider-map-order]"));
-    if (!mapCards.length) return;
-    loadMapLibre().then(maplibregl => {
-      mapCards.forEach(container => {
-        const order = assignedOrders.find(item => item.id === container.dataset.riderMapOrder);
-        const customer = orderPoint(order);
-        if (!order || !customer || riderMaps.has(container.id)) return;
-        const map = new maplibregl.Map({
-          container,
-          style: getOlaStyleUrl(),
-          center: [customer.lng, customer.lat],
-          zoom: 15,
-          attributionControl: false
-        });
-        riderMaps.set(container.id, map);
-        map.on("load", () => {
-          new maplibregl.Marker({ color: "#8806CE" }).setLngLat([customer.lng, customer.lat]).addTo(map);
-          const rider = riderPoint(order);
-          if (rider) {
-            new maplibregl.Marker({ color: "#08A045" }).setLngLat([rider.lng, rider.lat]).addTo(map);
-            map.addSource(`route-${order.id}`, { type: "geojson", data: { type: "Feature", geometry: { type: "LineString", coordinates: [[rider.lng, rider.lat], [customer.lng, customer.lat]] }, properties: {} } });
-            map.addLayer({ id: `route-${order.id}`, type: "line", source: `route-${order.id}`, layout: { "line-cap": "round", "line-join": "round" }, paint: { "line-color": "#08A045", "line-width": 4, "line-opacity": 0.9 } });
-            const bounds = new maplibregl.LngLatBounds();
-            bounds.extend([customer.lng, customer.lat]);
-            bounds.extend([rider.lng, rider.lat]);
-            map.fitBounds(bounds, { padding: 38, maxZoom: 15, duration: 400 });
-          }
-        });
-      });
-    }).catch(() => toast("Ola map preview failed. Check Netlify function and OLA_MAPS_API_KEY."));
+    if (!mapCards.length || !window.CBEMapV2) return;
+
+    mapCards.forEach(container => {
+      const order = assignedOrders.find(item => item.id === container.dataset.riderMapOrder);
+      const customer = orderPoint(order);
+      if (!order || !customer) return;
+      const rider = riderPoint(order);
+      window.CBEMapV2.renderRouteMap({
+        container,
+        customer,
+        rider,
+        customerColor: "#8806CE",
+        riderColor: "#08A045",
+        routeColor: "#08A045",
+        padding: 38,
+        maxZoom: 16,
+        onRoute: route => {
+          const meta = document.getElementById(`riderMapMeta-${order.id}`);
+          if (meta && rider) meta.textContent = `${route.distanceText || "—"} · ${route.durationText || "—"}`;
+        }
+      }).catch(() => toast("Ola map preview failed. Check Netlify function and OLA_MAPS_API_KEY."));
+    });
+  }
+
+  function ensureNavigationModal() {
+    let modal = document.getElementById("deliveryNavModal");
+    if (modal) return modal;
+    modal = document.createElement("section");
+    modal.id = "deliveryNavModal";
+    modal.className = "delivery-nav-modal";
+    modal.setAttribute("aria-hidden", "true");
+    modal.innerHTML = `
+      <div class="delivery-nav-sheet">
+        <div class="nav-sheet-top">
+          <div>
+            <div class="nav-kicker">Live navigation</div>
+            <div class="nav-title" id="navCustomerName">Customer</div>
+            <div class="nav-subtitle" id="navAddressText">Pinned delivery location</div>
+          </div>
+          <button class="icon-btn" id="closeNavBtn" type="button" aria-label="Close navigation">×</button>
+        </div>
+        <div class="nav-map-wrap">
+          <div id="riderLiveNavMap" class="nav-live-map"></div>
+          <div id="riderLiveNavMsg" class="nav-map-message">Loading Ola Maps...</div>
+        </div>
+        <div class="nav-metrics">
+          <div><span>ETA</span><strong id="navEta">—</strong></div>
+          <div><span>Distance</span><strong id="navDistance">—</strong></div>
+          <div><span>GPS</span><strong id="navGps">Waiting</strong></div>
+        </div>
+        <div class="nav-actions">
+          <button class="btn soft" id="externalNavBtn" type="button">Open maps</button>
+          <button class="btn soft" id="stopLiveNavBtn" type="button">Stop live</button>
+          <button class="btn brand" id="navDeliveredBtn" type="button">Delivered</button>
+        </div>
+      </div>`;
+    document.body.appendChild(modal);
+    $("closeNavBtn").addEventListener("click", () => modal.classList.remove("is-open"));
+    $("stopLiveNavBtn").addEventListener("click", stopLiveNavigation);
+    $("navDeliveredBtn").addEventListener("click", () => {
+      if (activeNavigationOrderId) markDelivered(activeNavigationOrderId);
+    });
+    $("externalNavBtn").addEventListener("click", () => {
+      const order = assignedOrders.find(item => item.id === activeNavigationOrderId);
+      const destination = orderPoint(order);
+      if (destination && window.CBEMapV2) window.CBEMapV2.openExternalNavigation(destination, latestRiderLocation || riderPoint(order));
+    });
+    return modal;
+  }
+
+  function setNavMetric(id, value) {
+    const el = $(id);
+    if (el) el.textContent = value || "—";
+  }
+
+  async function updateLiveNavigationMap(order, location) {
+    if (!order || !window.CBEMapV2) return;
+    const customer = orderPoint(order);
+    const rider = location || latestRiderLocation || riderPoint(order);
+    if (!customer) return toast("This order has no pinned delivery location.");
+    await window.CBEMapV2.renderRouteMap({
+      container: "riderLiveNavMap",
+      messageEl: "riderLiveNavMsg",
+      customer,
+      rider,
+      customerColor: "#8806CE",
+      riderColor: "#08A045",
+      routeColor: "#08A045",
+      autoFollow: true,
+      followZoom: 16,
+      fit: !rider,
+      onRoute: route => {
+        setNavMetric("navEta", route.durationText);
+        setNavMetric("navDistance", route.distanceText);
+      }
+    });
+  }
+
+  async function saveRiderLiveLocation(orderId, location) {
+    if (!auth.currentUser || !location) return;
+    latestRiderLocation = location;
+    setNavMetric("navGps", location.accuracy ? `±${Math.round(Number(location.accuracy))}m` : "Live");
+
+    await db.collection("deliveryPartners").doc(auth.currentUser.uid).set({
+      location,
+      lat: location.lat,
+      lng: location.lng,
+      busy: true,
+      navigationActive: true,
+      locationUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+    }, { merge: true });
+
+    await db.collection("orders").doc(orderId).set({
+      status: "out_for_delivery",
+      riderLocation: location,
+      riderLat: location.lat,
+      riderLng: location.lng,
+      riderNavigationActive: true,
+      riderLocationUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      riderUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+      updatedByRiderId: auth.currentUser.uid,
+      assignedRiderId: auth.currentUser.uid,
+      assignedRiderAuthUid: auth.currentUser.uid,
+      assignedRiderPhone: phone10(auth.currentUser.phoneNumber || riderProfile?.phone || ""),
+      assignedRiderPhoneE164: e164(auth.currentUser.phoneNumber || riderProfile?.phone || ""),
+      assignedRiderName: riderProfile?.name || "Rider"
+    }, { merge: true });
+  }
+
+  function startLocationWatch(order) {
+    if (!navigator.geolocation || !auth.currentUser || !order) return;
+    if (liveWatchId !== null) navigator.geolocation.clearWatch(liveWatchId);
+    liveWatchId = navigator.geolocation.watchPosition(async position => {
+      const location = {
+        lat: position.coords.latitude,
+        lng: position.coords.longitude,
+        accuracy: position.coords.accuracy || "",
+        updatedAtClient: new Date().toISOString()
+      };
+      await saveRiderLiveLocation(order.id, location);
+      updateLiveNavigationMap(order, location).catch(() => {});
+    }, error => {
+      console.log("Live GPS watch error", error);
+      toast("Keep GPS permission on for live tracking.");
+      setNavMetric("navGps", "GPS blocked");
+    }, { enableHighAccuracy: true, timeout: 15000, maximumAge: 5000 });
+  }
+
+  async function startDeliveryNavigation(orderId) {
+    const order = assignedOrders.find(item => item.id === orderId);
+    if (!order) return toast("Order not found.");
+    const destination = orderPoint(order);
+    if (!destination) return toast("Customer pinned location missing.");
+
+    activeNavigationOrderId = orderId;
+    const modal = ensureNavigationModal();
+    $("navCustomerName").textContent = orderCustomerName(order);
+    $("navAddressText").textContent = orderAddress(order) || "Pinned delivery location";
+    modal.classList.add("is-open");
+    modal.setAttribute("aria-hidden", "false");
+
+    let location = await getCurrentPositionSafe(true);
+    if (location) {
+      await saveRiderLiveLocation(orderId, location);
+      latestRiderLocation = location;
+    }
+
+    await updateLiveNavigationMap(order, location || riderPoint(order));
+    startLocationWatch(order);
+    toast("Live delivery navigation started.");
+  }
+
+  async function stopLiveNavigation() {
+    if (liveWatchId !== null && navigator.geolocation) {
+      navigator.geolocation.clearWatch(liveWatchId);
+      liveWatchId = null;
+    }
+    if (auth.currentUser) {
+      await db.collection("deliveryPartners").doc(auth.currentUser.uid).set({
+        navigationActive: false,
+        updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+      if (activeNavigationOrderId) {
+        await db.collection("orders").doc(activeNavigationOrderId).set({
+          riderNavigationActive: false,
+          riderUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
+          updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+      }
+    }
+    setNavMetric("navGps", "Stopped");
+    toast("Live navigation stopped.");
   }
 
   function toast(message) {
@@ -468,6 +618,9 @@
     document.querySelectorAll("[data-delivered]").forEach(btn => {
       btn.addEventListener("click", () => markDelivered(btn.dataset.delivered));
     });
+    document.querySelectorAll("[data-navigate]").forEach(btn => {
+      btn.addEventListener("click", () => startDeliveryNavigation(btn.dataset.navigate));
+    });
     setTimeout(initRiderOrderMaps, 80);
   }
 
@@ -487,7 +640,7 @@
       ? `<button class="btn brand small" data-delivered="${id}" type="button">Delivered</button>`
       : "";
     const destination = orderPoint(order);
-    const mapsUrl = destination ? `https://www.google.com/maps/dir/?api=1&destination=${destination.lat},${destination.lng}` : `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(address)}`;
+    const navigationButton = destination ? `<button class="btn soft small" data-navigate="${id}" type="button">Navigate</button>` : "";
     const whatsAppPhone = phone10(phone);
     const waUrl = whatsAppPhone ? `https://wa.me/91${whatsAppPhone}?text=${encodeURIComponent("Hi, I am from CBE Foods. I am on the way with your order.")}` : "#";
 
@@ -502,13 +655,14 @@
       <div class="status-pill ${escapeHTML(status)}">${escapeHTML(statusLabel(status))}</div>
       <div class="row"><span>Customer</span><strong>${escapeHTML(orderCustomerName(order))}<br>${escapeHTML(phone || "—")}</strong></div>
       <div class="row"><span>Address</span><strong>${escapeHTML(address || "—")}</strong></div>
-      ${orderPoint(order) ? `<div class="rider-order-map" id="riderMap-${id}" data-rider-map-order="${id}" aria-label="Ola Maps rider delivery map"></div><div class="map-note">Purple pin: customer exact pinned location. Green pin: your latest GPS.</div>` : ""}
+      ${orderPoint(order) ? `<div class="rider-order-map" id="riderMap-${id}" data-rider-map-order="${id}" aria-label="Ola Maps rider delivery map"></div><div class="map-note">Purple pin: customer exact pinned location. Green pin: your latest GPS. <span id="riderMapMeta-${id}">Tap Navigate for live route.</span></div>` : ""}
       <div class="item-list">${items}</div>
       <div class="row"><span>Payment</span><strong>${escapeHTML(order.paymentStatus || "—")} · ${escapeHTML(order.paymentProvider || "Razorpay")}</strong></div>
-      <div class="actions-grid ${pickupButton || deliveredButton ? "three" : ""}">
+      <div class="actions-grid four">
         <a class="btn soft small" href="tel:${escapeHTML(phone)}">Call</a>
-        <a class="btn soft small" target="_blank" rel="noopener" href="${mapsUrl}">Map</a>
+        ${navigationButton || `<a class="btn soft small" target="_blank" rel="noopener" href="${waUrl}">WhatsApp</a>`}
         ${pickupButton || deliveredButton || `<a class="btn soft small" target="_blank" rel="noopener" href="${waUrl}">WhatsApp</a>`}
+        <button class="btn soft small" data-navigate="${id}" type="button">Live map</button>
       </div>
     </article>`;
   }
@@ -542,6 +696,7 @@
     await db.collection("orders").doc(orderId).set(patch, { merge: true });
     await db.collection("deliveryPartners").doc(auth.currentUser.uid).set({ busy: true, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
     toast("Order marked on the way.");
+    startDeliveryNavigation(orderId);
   }
 
   async function markDelivered(orderId) {
@@ -550,6 +705,7 @@
     const location = await getCurrentPositionSafe(false);
     const patch = {
       status: "delivered",
+      riderNavigationActive: false,
       deliveredAt: firebase.firestore.FieldValue.serverTimestamp(),
       riderUpdatedAt: firebase.firestore.FieldValue.serverTimestamp(),
       updatedAt: firebase.firestore.FieldValue.serverTimestamp(),
@@ -577,6 +733,11 @@
       busy: stillActive.length > 0,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
+    if (activeNavigationOrderId === orderId) {
+      await stopLiveNavigation();
+      const modal = document.getElementById("deliveryNavModal");
+      if (modal) modal.classList.remove("is-open");
+    }
     toast("Order delivered.");
   }
 

@@ -50,6 +50,7 @@ service cloud.firestore {
         'riderLat',
         'riderLng',
         'riderLocationUpdatedAt',
+        'riderNavigationActive',
         'assignedRiderId',
         'assignedRiderAuthUid',
         'assignedRiderPhone',
