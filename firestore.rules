@@ -1,0 +1,113 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function signedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/admins/$(request.auth.uid));
+    }
+
+    function isOwner(userId) {
+      return signedIn() && request.auth.uid == userId;
+    }
+
+    function riderDocExists() {
+      return signedIn()
+        && exists(/databases/$(database)/documents/deliveryPartners/$(request.auth.uid));
+    }
+
+    function riderPhoneMatchesOrder() {
+      return signedIn()
+        && request.auth.token.phone_number != null
+        && resource.data.assignedRiderPhoneE164 == request.auth.token.phone_number;
+    }
+
+    function isAssignedRider() {
+      return signedIn()
+        && riderDocExists()
+        && (
+          resource.data.assignedRiderId == request.auth.uid ||
+          resource.data.assignedRiderAuthUid == request.auth.uid ||
+          riderPhoneMatchesOrder()
+        );
+    }
+
+    function riderOrderUpdateAllowed() {
+      return request.resource.data.diff(resource.data).changedKeys().hasOnly([
+        'status',
+        'updatedAt',
+        'updatedByRiderId',
+        'riderUpdatedAt',
+        'pickedUpAt',
+        'deliveredAt',
+        'deliveryEvents',
+        'riderLocation',
+        'riderLat',
+        'riderLng',
+        'riderLocationUpdatedAt',
+        'assignedRiderId',
+        'assignedRiderAuthUid',
+        'assignedRiderPhone',
+        'assignedRiderPhoneE164',
+        'assignedRiderName'
+      ])
+      && request.resource.data.customerId == resource.data.customerId
+      && request.resource.data.status in ['out_for_delivery', 'delivered'];
+    }
+
+    match /admins/{adminId} {
+      allow get: if signedIn() && request.auth.uid == adminId;
+      allow list: if isAdmin();
+      allow create, update, delete: if false;
+    }
+
+    match /customers/{customerId} {
+      allow create, get, update: if isOwner(customerId) || isAdmin();
+      allow delete: if isAdmin();
+      allow list: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      allow create: if signedIn()
+        && request.resource.data.customerId == request.auth.uid;
+
+      allow get: if isAdmin()
+        || (signedIn() && resource.data.customerId == request.auth.uid)
+        || isAssignedRider();
+
+      allow list: if isAdmin() || signedIn();
+
+      allow update: if isAdmin()
+        || (isAssignedRider() && riderOrderUpdateAllowed());
+
+      allow delete: if isAdmin();
+    }
+
+    match /menuItems/{itemId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /storeSettings/{settingId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    match /deliveryPartners/{partnerId} {
+      allow get: if isAdmin() || isOwner(partnerId);
+      allow list: if isAdmin();
+      allow create: if isOwner(partnerId)
+        && request.resource.data.authUid == request.auth.uid;
+      allow update: if isAdmin()
+        || (isOwner(partnerId)
+          && resource.data.authUid == request.auth.uid
+          && request.resource.data.authUid == request.auth.uid);
+      allow delete: if isAdmin();
+    }
+  }
+}

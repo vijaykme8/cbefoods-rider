@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+<meta name="theme-color" content="#8806CE" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="CBE Rider" />
+<title>CBE Foods Rider</title>
+<link rel="manifest" href="manifest.webmanifest" />
+<link rel="stylesheet" href="https://unpkg.com/maplibre-gl@5.9.0/dist/maplibre-gl.css" />
+<link rel="icon" href="icons/rider-icon.svg" type="image/svg+xml" />
+<link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+<div class="app-shell">
+  <header class="top-bar">
+    <div>
+      <div class="eyebrow">CBE Foods</div>
+      <h1 class="brand-title"><span>Rider</span> Partner</h1>
+      <p class="muted" id="connectionText">Firebase delivery control</p>
+    </div>
+    <button class="icon-btn" id="refreshBtn" type="button" aria-label="Refresh">↻</button>
+  </header>
+
+  <main>
+    <section class="card login-card" id="loginCard">
+      <div>
+        <h2 class="section-title">Rider login</h2>
+        <p class="muted">Login with your verified mobile number. Ask the restaurant owner to assign orders to your rider profile.</p>
+      </div>
+
+      <div class="phone-screen" id="phoneScreen">
+        <label class="field">
+          <span>Mobile number</span>
+          <div class="phone-box">
+            <span class="country">+91</span>
+            <span class="country dash">|</span>
+            <input id="phoneInput" class="phone-input" type="tel" inputmode="numeric" maxlength="10" placeholder="9876543210" autocomplete="tel" />
+          </div>
+        </label>
+        <button class="btn brand" id="sendOtpBtn" type="button">Send OTP</button>
+        <p class="tiny-note">Use the same test number added in Firebase Phone Auth during setup.</p>
+        <div id="recaptcha-container"></div>
+      </div>
+
+      <div class="otp-screen" id="otpScreen" hidden>
+        <button class="back-link" id="backToPhoneBtn" type="button">← Change number</button>
+        <label class="field">
+          <span>Enter OTP</span>
+          <input id="otpInput" class="input big-input" inputmode="numeric" maxlength="6" placeholder="123456" autocomplete="one-time-code" />
+        </label>
+        <button class="btn brand" id="verifyOtpBtn" type="button">Verify OTP</button>
+      </div>
+
+      <div class="name-screen" id="nameScreen" hidden>
+        <label class="field">
+          <span>Your name</span>
+          <input id="riderNameInput" class="input big-input" placeholder="Eg: Arun" autocomplete="name" />
+        </label>
+        <button class="btn brand" id="saveNameBtn" type="button">Start delivery</button>
+        <p class="tiny-note">This name will be visible to the admin while assigning orders.</p>
+      </div>
+
+      <div class="notice" id="loginHelp" hidden></div>
+    </section>
+
+    <section class="rider-panel" id="riderPanel" hidden>
+      <section class="profile-card">
+        <div class="profile-main">
+          <div class="rider-avatar" id="riderInitial">R</div>
+          <div>
+            <div class="rider-name" id="riderNameText">Rider</div>
+            <div class="muted" id="riderPhoneText">+91</div>
+          </div>
+        </div>
+        <button class="btn soft small" id="logoutBtn" type="button">Logout</button>
+      </section>
+
+      <section class="online-card">
+        <div>
+          <div class="online-title" id="onlineTitle">You are available</div>
+          <div class="muted" id="onlineSubtext">Ready to receive assigned deliveries.</div>
+        </div>
+        <label class="switch">
+          <input id="onlineToggle" type="checkbox" checked />
+          <span></span>
+        </label>
+      </section>
+
+      <section class="stats-grid">
+        <div class="stat-card"><span>Assigned</span><strong id="statAssigned">0</strong></div>
+        <div class="stat-card"><span>On the way</span><strong id="statOnWay">0</strong></div>
+        <div class="stat-card"><span>Delivered today</span><strong id="statDelivered">0</strong></div>
+        <div class="stat-card"><span>Today value</span><strong id="statValue">₹0</strong></div>
+      </section>
+
+      <nav class="tabs" aria-label="Rider sections">
+        <button class="tab active" data-tab="active" type="button">Active</button>
+        <button class="tab" data-tab="delivered" type="button">Delivered</button>
+        <button class="tab" data-tab="profile" type="button">Profile</button>
+      </nav>
+
+      <section class="tab-section active" id="activeSection">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title">Assigned orders</h2>
+            <p class="muted">Pickup, navigate, and update customer tracking.</p>
+          </div>
+          <button class="btn soft small" id="locationBtn" type="button">Update GPS</button>
+        </div>
+        <div class="stack" id="activeOrdersList"></div>
+      </section>
+
+      <section class="tab-section" id="deliveredSection">
+        <div class="section-head">
+          <div>
+            <h2 class="section-title green">Completed</h2>
+            <p class="muted">Orders delivered by you today and earlier.</p>
+          </div>
+        </div>
+        <div class="stack" id="deliveredOrdersList"></div>
+      </section>
+
+      <section class="tab-section" id="profileSection">
+        <div class="card">
+          <h2 class="section-title">Rider details</h2>
+          <label class="field"><span>Name</span><input class="input" id="profileName" placeholder="Rider name" /></label>
+          <label class="field"><span>Verified mobile</span><input class="input readonly" id="profilePhone" readonly /></label>
+          <label class="field"><span>Vehicle</span><input class="input" id="profileVehicle" placeholder="Bike / Scooter" /></label>
+          <label class="field"><span>Vehicle number</span><input class="input" id="profileVehicleNo" placeholder="TN 00 AB 0000" /></label>
+          <button class="btn brand" id="saveProfileBtn" type="button">Save profile</button>
+        </div>
+
+        <div class="card">
+          <h2 class="section-title red">Help</h2>
+          <p class="muted">If no orders appear, ask admin to assign an order to your rider profile from the Admin → Orders screen.</p>
+          <button class="btn soft" id="testSoundBtn" type="button">Test alert sound</button>
+        </div>
+      </section>
+    </section>
+  </main>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script src="firebase-config.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.12.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.12.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/12.12.1/firebase-firestore-compat.js"></script>
+<script src="rider.js"></script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+  }
+</script>
+</body>
+</html>
