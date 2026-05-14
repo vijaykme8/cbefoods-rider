@@ -8,7 +8,7 @@
 ========================================================= */
 (function () {
   const STORE_ID = window.TIFFIN_STORE_ID || "main";
-  const LIVE_LOCATION_SYNC_MIN_MS = 60 * 1000;
+  const LIVE_LOCATION_SYNC_MIN_MS = 20 * 1000;
   const $ = id => document.getElementById(id);
 
   const STATUS_LABELS = {
