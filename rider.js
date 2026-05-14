@@ -8,6 +8,7 @@
 ========================================================= */
 (function () {
   const STORE_ID = window.TIFFIN_STORE_ID || "main";
+  const LIVE_LOCATION_SYNC_MIN_MS = 60 * 1000;
   const $ = id => document.getElementById(id);
 
   const STATUS_LABELS = {
@@ -33,6 +34,7 @@
   let activeNavigationOrderId = "";
   let liveWatchId = null;
   let latestRiderLocation = null;
+  let lastLiveLocationWriteAt = 0;
 
   function initFirebase() {
     if (!window.firebase || !window.TIFFIN_FIREBASE_CONFIG) {
@@ -534,6 +536,7 @@
   async function saveRiderLiveLocation(orderId, location) {
     if (!auth.currentUser || !location) return;
     latestRiderLocation = location;
+    lastLiveLocationWriteAt = Date.now();
     setNavMetric("navGps", location.accuracy ? `±${Math.round(Number(location.accuracy))}m` : "Live");
 
     await db.collection("deliveryPartners").doc(auth.currentUser.uid).set({
@@ -560,7 +563,8 @@
       assignedRiderAuthUid: auth.currentUser.uid,
       assignedRiderPhone: phone10(auth.currentUser.phoneNumber || riderProfile?.phone || ""),
       assignedRiderPhoneE164: e164(auth.currentUser.phoneNumber || riderProfile?.phone || ""),
-      assignedRiderName: riderProfile?.name || "Rider"
+      assignedRiderName: riderProfile?.name || "Rider",
+      assignedRiderPhotoUrl: riderProfile?.photoUrl || riderProfile?.photoURL || riderProfile?.profilePhotoUrl || riderProfile?.imageUrl || ""
     }, { merge: true });
   }
 
@@ -576,6 +580,9 @@
         speed: position.coords.speed || "",
         updatedAtClient: new Date().toISOString()
       };
+      latestRiderLocation = location;
+      const now = Date.now();
+      if (now - lastLiveLocationWriteAt < LIVE_LOCATION_SYNC_MIN_MS) return;
       await saveRiderLiveLocation(order.id, location);
       updateLiveNavigationMap(order, location).catch(() => {});
     }, error => {
@@ -600,8 +607,10 @@
 
     let location = await getCurrentPositionSafe(true);
     if (location) {
-      await saveRiderLiveLocation(orderId, location);
       latestRiderLocation = location;
+      if (Date.now() - lastLiveLocationWriteAt >= LIVE_LOCATION_SYNC_MIN_MS) {
+        await saveRiderLiveLocation(orderId, location);
+      }
     }
 
     await updateLiveNavigationMap(order, location || riderPoint(order));
@@ -978,6 +987,7 @@
       assignedRiderPhone: phone10(auth.currentUser.phoneNumber || riderProfile?.phone || ""),
       assignedRiderPhoneE164: e164(auth.currentUser.phoneNumber || riderProfile?.phone || ""),
       assignedRiderName: riderProfile?.name || "Rider",
+      assignedRiderPhotoUrl: riderProfile?.photoUrl || riderProfile?.photoURL || riderProfile?.profilePhotoUrl || riderProfile?.imageUrl || "",
       deliveryEvents: firebase.firestore.FieldValue.arrayUnion({
         status: "out_for_delivery",
         label: "Picked up by rider",
@@ -986,9 +996,12 @@
       })
     };
     if (location) {
+      latestRiderLocation = location;
+      lastLiveLocationWriteAt = Date.now();
       patch.riderLocation = location;
       patch.riderLat = location.lat;
       patch.riderLng = location.lng;
+      patch.riderLocationUpdatedAt = firebase.firestore.FieldValue.serverTimestamp();
     }
     await db.collection("orders").doc(orderId).set(patch, { merge: true });
     await db.collection("deliveryPartners").doc(auth.currentUser.uid).set({ busy: true, navigationActive: true, updatedAt: firebase.firestore.FieldValue.serverTimestamp() }, { merge: true });
@@ -1012,6 +1025,7 @@
       assignedRiderPhone: phone10(auth.currentUser.phoneNumber || riderProfile?.phone || ""),
       assignedRiderPhoneE164: e164(auth.currentUser.phoneNumber || riderProfile?.phone || ""),
       assignedRiderName: riderProfile?.name || "Rider",
+      assignedRiderPhotoUrl: riderProfile?.photoUrl || riderProfile?.photoURL || riderProfile?.profilePhotoUrl || riderProfile?.imageUrl || "",
       deliveryEvents: firebase.firestore.FieldValue.arrayUnion({
         status: "delivered",
         label: "Delivered by rider",
