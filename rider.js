@@ -31,7 +31,6 @@
   let knownAssignedIds = new Set();
   let locallyDeliveredIds = new Set();
   let suppressAssignmentToastUntil = 0;
-  let knownAssignedIds = new Set();
   let bootedOrdersOnce = false;
   let soundEnabled = true;
   let riderMaps = new Map();
@@ -881,7 +880,7 @@
       if (!bootedOrdersOnce) {
         active.forEach(order => knownAssignedIds.add(order.id));
       } else {
-        const newOrders = active.filter(order => !knownAssignedIds.has(order.id));
+        const newOrders = active.filter(order => !knownAssignedIds.has(order.id) && !locallyDeliveredIds.has(order.id));
         if (newOrders.length) {
           playAlertSound();
           toast(`New delivery assigned: #${String(newOrders[0].id).slice(-6)}`);
@@ -1037,9 +1036,6 @@
   async function markDelivered(orderId) {
     if (!orderId) return;
     if (!confirm("Mark this order as delivered?")) return;
-    locallyDeliveredIds.add(orderId);
-    knownAssignedIds.add(orderId);
-    suppressAssignmentToastUntil = Date.now() + 10000;
     locallyDeliveredIds.add(orderId);
     knownAssignedIds.add(orderId);
     suppressAssignmentToastUntil = Date.now() + 10000;
