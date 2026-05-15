@@ -1040,6 +1040,9 @@
     locallyDeliveredIds.add(orderId);
     knownAssignedIds.add(orderId);
     suppressAssignmentToastUntil = Date.now() + 10000;
+    locallyDeliveredIds.add(orderId);
+    knownAssignedIds.add(orderId);
+    suppressAssignmentToastUntil = Date.now() + 10000;
     const location = await getCurrentPositionSafe(false);
     const patch = {
       status: "delivered",
