@@ -29,6 +29,9 @@
   let assignedOrders = [];
   let lastAssignedIds = new Set();
   let knownAssignedIds = new Set();
+  let locallyDeliveredIds = new Set();
+  let suppressAssignmentToastUntil = 0;
+  let knownAssignedIds = new Set();
   let bootedOrdersOnce = false;
   let soundEnabled = true;
   let riderMaps = new Map();
@@ -642,6 +645,7 @@
   }
 
   function toast(message) {
+    if (message && String(message).startsWith("New delivery assigned") && Date.now() < suppressAssignmentToastUntil) return;
     const el = $("toast");
     if (!el || !message) return;
     el.textContent = message;
@@ -852,7 +856,15 @@
       byPhone.forEach((value, key) => merged.set(key, value));
       byUid.forEach((value, key) => merged.set(key, value));
 
-      assignedOrders = Array.from(merged.values()).sort((a, b) => {
+      assignedOrders = Array.from(merged.values())
+        .filter(order => {
+          if (!order || !order.id) return false;
+          const status = clean(order.status || "");
+          if (status === "delivered") locallyDeliveredIds.add(order.id);
+          if (locallyDeliveredIds.has(order.id) && status !== "delivered") return false;
+          return true;
+        })
+        .sort((a, b) => {
         return toDate(b.createdAt || b.createdAtClient) - toDate(a.createdAt || a.createdAtClient);
       });
 
@@ -1025,6 +1037,9 @@
   async function markDelivered(orderId) {
     if (!orderId) return;
     if (!confirm("Mark this order as delivered?")) return;
+    locallyDeliveredIds.add(orderId);
+    knownAssignedIds.add(orderId);
+    suppressAssignmentToastUntil = Date.now() + 10000;
     const location = await getCurrentPositionSafe(false);
     const patch = {
       status: "delivered",
