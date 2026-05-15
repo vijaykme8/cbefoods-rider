@@ -8,7 +8,7 @@
 ========================================================= */
 (function () {
   const STORE_ID = window.TIFFIN_STORE_ID || "main";
-  const LIVE_LOCATION_SYNC_MIN_MS = 20 * 1000;
+  const LIVE_LOCATION_SYNC_MIN_MS = 60 * 1000;
   const $ = id => document.getElementById(id);
 
   const STATUS_LABELS = {
@@ -28,6 +28,7 @@
   let riderUnsubs = [];
   let assignedOrders = [];
   let lastAssignedIds = new Set();
+  let knownAssignedIds = new Set();
   let bootedOrdersOnce = false;
   let soundEnabled = true;
   let riderMaps = new Map();
@@ -857,13 +858,25 @@
 
       const active = assignedOrders.filter(order => !["delivered", "cancelled", "payment_failed"].includes(order.status));
       const ids = new Set(active.map(order => order.id));
-      if (bootedOrdersOnce) {
-        const newOrders = active.filter(order => !lastAssignedIds.has(order.id));
+
+      /*
+        Important:
+        We listen by rider UID and rider phone. Those two Firestore snapshots can arrive
+        at slightly different times. After marking an order delivered, one listener can
+        briefly show the old active copy again. Do not treat an already-known order as a
+        new assignment just because snapshots arrived out of order.
+      */
+      if (!bootedOrdersOnce) {
+        active.forEach(order => knownAssignedIds.add(order.id));
+      } else {
+        const newOrders = active.filter(order => !knownAssignedIds.has(order.id));
         if (newOrders.length) {
           playAlertSound();
           toast(`New delivery assigned: #${String(newOrders[0].id).slice(-6)}`);
         }
+        active.forEach(order => knownAssignedIds.add(order.id));
       }
+
       lastAssignedIds = ids;
       bootedOrdersOnce = true;
       renderOrders();
@@ -1039,9 +1052,28 @@
       patch.riderLng = location.lng;
     }
     await db.collection("orders").doc(orderId).set(patch, { merge: true });
+
+    /*
+      Update local UI immediately. Do not wait for both Firestore assignment listeners,
+      because UID/phone snapshots can briefly disagree and re-show the same order.
+    */
+    assignedOrders = assignedOrders.map(order => {
+      if (order.id !== orderId) return order;
+      return {
+        ...order,
+        status: "delivered",
+        riderNavigationActive: false,
+        deliveredAt: new Date().toISOString()
+      };
+    });
+    lastAssignedIds.delete(orderId);
+    knownAssignedIds.add(orderId);
+    renderOrders();
+
     const stillActive = assignedOrders.filter(order => order.id !== orderId && !["delivered", "cancelled", "payment_failed"].includes(order.status));
     await db.collection("deliveryPartners").doc(auth.currentUser.uid).set({
       busy: stillActive.length > 0,
+      navigationActive: false,
       updatedAt: firebase.firestore.FieldValue.serverTimestamp()
     }, { merge: true });
     if (activeNavigationOrderId === orderId) {
