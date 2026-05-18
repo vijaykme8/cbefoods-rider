@@ -1,7 +1,8 @@
 /* =========================================================
    Tiffin CBE Firebase Config
-   Use the SAME Firebase project config in customer, admin,
-   and rider apps.
+   Use the SAME Firebase project config in customer and admin apps.
+   Frontend Firebase config is not a password. Security is controlled
+   by Firestore rules and Firebase Auth.
 ========================================================= */
 window.TIFFIN_FIREBASE_CONFIG = {
   apiKey: "AIzaSyAD9wuVrTkEDB5adQc3jd_xkAYjEbgFkdw",

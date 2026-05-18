@@ -1,16 +1,15 @@
 {
-  "name": "CBE Foods Rider",
-  "short_name": "CBE Rider",
-  "start_url": "./",
+  "name": "Coimbatore Foods Rider",
+  "short_name": "Rider",
+  "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#F5F5F7",
+  "background_color": "#FDFDFF",
   "theme_color": "#8806CE",
-  "orientation": "portrait",
   "icons": [
     {
       "src": "icons/rider-icon.svg",
-      "sizes": "any",
+      "sizes": "192x192",
       "type": "image/svg+xml",
       "purpose": "any maskable"
     }
